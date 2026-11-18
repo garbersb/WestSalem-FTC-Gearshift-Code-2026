@@ -20,7 +20,7 @@ public class TrackTag {
 
     private double lastTimestamp = -1.0;
 
-    private static final double KP = 0.00006;           // Even gentler step
+    private static final double KP = 0.0001;           // Even gentler step
     private static final double START_TRACK_DEG = 5.0;  // Only move again if tag drifts > 5 deg off center
     private static final double STOP_TRACK_DEG  = 2.5;  // Lock in and stop moving once within 2.5 deg
     private static final double CENTER_POS = 0.74;     // Turntable center

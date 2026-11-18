@@ -4,12 +4,16 @@ import com.qualcomm.robotcore.eventloop.opmode.LinearOpMode;
 import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
 import com.qualcomm.robotcore.hardware.DcMotor;
 import com.qualcomm.robotcore.hardware.Servo;
-import com.qualcomm.robotcore.hardware.PwmControl;
-import com.qualcomm.robotcore.hardware.ServoImplEx;
 import com.qualcomm.robotcore.util.ElapsedTime;
 
 @TeleOp(name="Robot Centric Drive")
 public class RobotCentricDrive extends LinearOpMode {
+
+    // Shared tracking toggle: can be toggled on Gamepad 1 (X button) and read by redAuto / blueAuto
+    public static boolean autoTrackingEnabled = true;
+
+    private Intake intake = null;
+    private Outtake outtake = null;
 
     ElapsedTime loopTimer = new ElapsedTime();
 
@@ -20,16 +24,17 @@ public class RobotCentricDrive extends LinearOpMode {
 
     // Turntable servo variables
     private Servo turnTableServo;
-    private double turntablePosition = .74;      // 0.74 poin// ts the outtake towards the front.
-    private final double STEP_SIZE = 0.02;       // 0.02 = ~3
+    private double turntablePosition = .74;      // 0.74 points the outtake towards the front
+    private final double STEP_SIZE = 0.02;       // 0.02 = ~36 deg on a 5-turn servo
 
-    // TODO: Adjust these two limits to match your turntable's safe physical travel range!
+    // Safe physical travel range for turntable
     private final double MIN_TURNTABLE_POS = 0.35;
     private final double MAX_TURNTABLE_POS = 1.00;
 
-    // 6 degrees per click on a 5-turn servo
+    // Button debounce flags
     private boolean dpadUpWasPressed = false;
     private boolean dpadDownWasPressed = false;
+    private boolean x1WasPressed = false;
 
     // Limelight tracker & State Machine
     private TrackTag tagTracker = null;
@@ -45,7 +50,7 @@ public class RobotCentricDrive extends LinearOpMode {
         frontLeftDrive = hardwareMap.get(DcMotor.class, "frontLeft");
         backLeftDrive = hardwareMap.get(DcMotor.class, "backLeft");
 
-        // Working motor directions from your test
+        // Working motor directions
         frontLeftDrive.setDirection(DcMotor.Direction.REVERSE);
         backLeftDrive.setDirection(DcMotor.Direction.REVERSE);
         frontRightDrive.setDirection(DcMotor.Direction.REVERSE);
@@ -63,26 +68,40 @@ public class RobotCentricDrive extends LinearOpMode {
 
         // Initialize turntable servo and move to starting center position
         turnTableServo = hardwareMap.get(Servo.class, "tableTopServo");
-
-        //let's make sure we center the table top to point to the front.
         turnTableServo.setPosition(turntablePosition);
 
         // Initialize Limelight tracker and state machine
         tagTracker = new TrackTag(hardwareMap, RED_ALLIANCE_PIPELINE);
         stateMachine = new StateMachine();
 
+        intake = new Intake(hardwareMap);
+        outtake = new Outtake(hardwareMap);
 
-        telemetry.addData("Status", "Initialized - Servo at " + turntablePosition);
-        telemetry.update();
+        // Allow toggling tracking with Gamepad 1 'X' while waiting for Start
+        while (!isStarted() && !isStopRequested()) {
+            handleTrackingToggle();
+            telemetry.addData("Status", "Initialized - Servo at " + turntablePosition);
+            telemetry.addData("Auto/TeleOp Tracking [GP1 X]", autoTrackingEnabled ? "ON" : "OFF");
+            telemetry.update();
+        }
 
-        waitForStart();
+        if (isStopRequested()) {
+            return;
+        }
 
         tagTracker.start();
 
         while (opModeIsActive()) {
-            // 1. Automatic AprilTag Tracking Update
-            // (Assumes your TrackTag.update() method takes current position and returns the new target position)
-            turntablePosition = tagTracker.update(turntablePosition);
+            // Check Gamepad 1 'X' to toggle AprilTag tracking ON/OFF
+            handleTrackingToggle();
+
+            intake.update(gamepad1, gamepad2);
+            outtake.update(gamepad2);
+
+            // 1. Automatic AprilTag Tracking Update (only moves turntable if tracking is ON)
+            if (autoTrackingEnabled) {
+                turntablePosition = tagTracker.update(turntablePosition);
+            }
 
             // 2. Manual D-Pad Override (Optional fine-tuning or re-centering)
             if (gamepad1.dpad_up && !dpadUpWasPressed) {
@@ -123,12 +142,6 @@ public class RobotCentricDrive extends LinearOpMode {
             frontRightDrive.setPower(frontRightPower);
             backRightDrive.setPower(backRightPower);
 
-            // Telemetry to track your exact servo position
-            //telemetry.addData("Turntable Pos", "%.3f (%.0f deg)", turntablePosition, turntablePosition * 1800);
-
-            // 6. Telemetry
-            telemetry.addData("State", state);
-
             // --- TELEMETRY ---
             int activePipe = tagTracker.getActivePipeline();
             String allianceLabel = (activePipe == RED_ALLIANCE_PIPELINE) ? "RED (0)"
@@ -138,6 +151,7 @@ public class RobotCentricDrive extends LinearOpMode {
             boolean atLimit = (turntablePosition <= MIN_TURNTABLE_POS + 0.001)
                     || (turntablePosition >= MAX_TURNTABLE_POS - 0.001);
 
+            telemetry.addData("Tracking [GP1 X]", autoTrackingEnabled ? "ON" : "OFF");
             telemetry.addData("Alliance Pipeline", allianceLabel);
             telemetry.addData("State", state);
             telemetry.addData("Tag Visible", tagTracker.hasTarget() ? "YES (ID: " + tagTracker.getTagId() + ")" : "NO");
@@ -150,10 +164,32 @@ public class RobotCentricDrive extends LinearOpMode {
 
             telemetry.addData("Distance From Hive", tagTracker.getDistanceInches());
             telemetry.addData("Loop Hz", "%.0f", 1.0 / loopTimer.seconds());
+
+            telemetry.addData("Outtake Max Power", "%.1f", outtake.getMotorMaxPower());
+            telemetry.addData("Second Arm Pos", "%.2f", intake.getSecondArmPosition());
+            telemetry.addData("Outtake Vel (ticks/s)", "%.0f", outtake.getOuttakeVelocity());
+
             loopTimer.reset();
             telemetry.update();
-
-            telemetry.update();
         }
+    }
+
+    /**
+     * Helper method that toggles tracking ON/OFF when Gamepad 1 'X' is pressed.
+     * Can also be called by redAuto and blueAuto during their Init loops!
+     */
+    public static void checkGamepadToggle(boolean xPressed, boolean[] wasPressedHolder) {
+        if (xPressed && !wasPressedHolder[0]) {
+            autoTrackingEnabled = !autoTrackingEnabled;
+        }
+        wasPressedHolder[0] = xPressed;
+    }
+
+
+    private void handleTrackingToggle() {
+        if (gamepad1.x && !x1WasPressed) {
+            autoTrackingEnabled = !autoTrackingEnabled;
+        }
+        x1WasPressed = gamepad1.x;
     }
 }
